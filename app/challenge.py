@@ -20,4 +20,9 @@ class ChallengeManager:
         return self.challenge
 
     def verify(self, direction):
+        if direction == LEFT: 
+            direction = RIGHT
+        elif direction == RIGHT:
+            direction = LEFT
+
         return direction == self.challenge

@@ -6,7 +6,7 @@ from app.camera import Camera
 from app.detector import Detector
 from app.recognizer import Recognizer
 from app.liveness import LivenessDetector
-from app.antispoof import AntiSpoofDetector
+from app.antispoof_dl import AntiSpoofDL
 from app.logger import logger
 from app.config import (
     DEBUG,
@@ -28,8 +28,9 @@ class FaceUnlockEngine:
         self.detector = Detector()
         self.recognizer = Recognizer()
         self.liveness = LivenessDetector()
-        self.antispoof = AntiSpoofDetector()
-
+        self.antispoof = AntiSpoofDL()
+        self.real_frame_counter = 0
+        self.required_real_frames = 8 
     def scan_and_unlock(self):
         try:
             self.cam.open()
@@ -138,11 +139,11 @@ class FaceUnlockEngine:
 
                         if match_count >= MATCH_THRESHOLD:
 
-                                logger.info("Face recognized")
+                            logger.info("Face recognized")
 
-                        if DEBUG:
+                            if DEBUG:
 
-                            cv2.putText(
+                                cv2.putText(
                                 frame,
                                 "Turn " + challenge_name if not challenge_completed else "Blink to Unlock",
                                 (20, 40),
@@ -152,24 +153,39 @@ class FaceUnlockEngine:
                                 2,
                             )
 
+                       # ----------------------------
+                       # Authentication Pipeline
+                       # ----------------------------
+
                             if challenge_completed:
 
-                                if challenge_completed:
+                                if self.liveness.verify(frame):
 
-                                    if self.liveness.verify(frame):
+                                    logger.info("Blink detected")
 
-                                        logger.info("Blink detected")
+                                    is_real, confidence = self.antispoof.verify(frame, face)
+                                    if is_real:
 
-                                        if self.antispoof.verify(frame):
+                                        self.real_frame_counter += 1
 
-                                            logger.info("Anti-Spoof Passed")
+                                        logger.info(
+                                            f"Deep Anti-Spoof REAL "
+                                            f"({self.real_frame_counter}/{self.required_real_frames})"
+                                        )
+
+                                        if self.real_frame_counter >= self.required_real_frames:
+
                                             logger.info("Identity Confirmed")
 
                                             return True
 
-                                        else:
+                                    else:
 
-                                            logger.warning("Anti-Spoof Failed")
+                                        self.real_frame_counter = 0
+
+                                        logger.warning(
+                                            "Deep Anti-Spoof Failed - Counter Reset"
+                                        )
 
                     else:
 

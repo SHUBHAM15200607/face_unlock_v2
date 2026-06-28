@@ -1,9 +1,8 @@
-from pathlib import Path
-
 import cv2
 import numpy as np
 import onnxruntime as ort
 
+from pathlib import Path
 
 MODEL_PATH = (
     Path(__file__).resolve().parent.parent
@@ -24,7 +23,7 @@ class AntiSpoofDL:
         print("=" * 50)
 
         self.model_size = 128
-
+        self.expand_factor = 1.5
         self.threshold = 0.5
 
         self.session = ort.InferenceSession(
@@ -36,59 +35,86 @@ class AntiSpoofDL:
 
         print("Model Loaded Successfully")
 
-    # --------------------------------------------------
+    # ----------------------------------------------------------
 
-    def preprocess(self, image):
+    def expand_bbox(self, frame, face):
 
-        h, w = image.shape[:2]
+        h, w = frame.shape[:2]
+
+        x, y, fw, fh = face[:4].astype(int)
+
+        cx = x + fw / 2
+        cy = y + fh / 2
+
+        size = int(max(fw, fh) * self.expand_factor)
+
+        x1 = int(cx - size / 2)
+        y1 = int(cy - size / 2)
+
+        x2 = x1 + size
+        y2 = y1 + size
+
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+
+        return x1, y1, x2, y2
+
+    # ----------------------------------------------------------
+
+    def crop_face(self, frame, face):
+
+        x1, y1, x2, y2 = self.expand_bbox(frame, face)
+
+        crop = frame[y1:y2, x1:x2]
+
+        return crop
+
+    # ----------------------------------------------------------
+
+    def preprocess(self, face):
+
+        h, w = face.shape[:2]
 
         ratio = self.model_size / max(h, w)
 
         nh = int(h * ratio)
-
         nw = int(w * ratio)
 
-        if ratio > 1:
-            interp = cv2.INTER_LANCZOS4
-        else:
-            interp = cv2.INTER_AREA
+        interp = cv2.INTER_AREA if ratio < 1 else cv2.INTER_LANCZOS4
 
-        image = cv2.resize(
-            image,
-            (nw, nh),
-            interpolation=interp,
+        face = cv2.resize(face, (nw, nh), interpolation=interp)
+
+        top = (self.model_size - nh) // 2
+        bottom = self.model_size - nh - top
+
+        left = (self.model_size - nw) // 2
+        right = self.model_size - nw - left
+
+        face = cv2.copyMakeBorder(
+            face,
+            top,
+            bottom,
+            left,
+            right,
+            cv2.BORDER_REFLECT_101,
         )
 
-        canvas = np.zeros(
-            (
-                self.model_size,
-                self.model_size,
-                3,
-            ),
-            dtype=np.uint8,
-        )
+        face = face.transpose(2, 0, 1).astype(np.float32)
 
-        y = (self.model_size - nh) // 2
+        face /= 255.0
 
-        x = (self.model_size - nw) // 2
+        face = np.expand_dims(face, axis=0)
 
-        canvas[
-            y:y + nh,
-            x:x + nw,
-        ] = image
+        return face
 
-        canvas = canvas.astype(np.float32)
+    # ----------------------------------------------------------
 
-        canvas /= 255.0
+    def infer(self, crop):
 
-        canvas = canvas.transpose(2, 0, 1)
-
-        return np.expand_dims(canvas, axis=0)
-    # --------------------------------------------------
-
-    def infer(self, face):
-
-        input_tensor = self.preprocess(face)
+        input_tensor = self.preprocess(crop)
 
         output = self.session.run(
             None,
@@ -99,46 +125,36 @@ class AntiSpoofDL:
 
         return output[0]
 
-    # --------------------------------------------------
+    # ----------------------------------------------------------
 
     def process_logits(self, logits):
 
-        real_logit = float(logits[0])
+        real = float(logits[0])
+        spoof = float(logits[1])
 
-        spoof_logit = float(logits[1])
-
-        score = real_logit - spoof_logit
+        score = real - spoof
 
         confidence = abs(score)
 
         is_real = score >= self.threshold
 
         return {
-
             "is_real": is_real,
-
             "score": score,
-
             "confidence": confidence,
-
-            "real_logit": real_logit,
-
-            "spoof_logit": spoof_logit,
-
+            "real_logit": real,
+            "spoof_logit": spoof,
         }
 
-    # --------------------------------------------------
+    # ----------------------------------------------------------
 
-    def predict(self, face):
+    def verify(self, frame, face):
 
-        logits = self.infer(face)
+        crop = self.crop_face(frame, face)
 
-        return self.process_logits(logits)
-    # --------------------------------------------------
+        logits = self.infer(crop)
 
-    def verify(self, face):
-
-        result = self.predict(face)
+        result = self.process_logits(logits)
 
         print("\n========== Deep Anti-Spoof ==========")
         print(f"Real Logit : {result['real_logit']:.3f}")

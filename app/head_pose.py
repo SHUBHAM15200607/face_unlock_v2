@@ -22,7 +22,7 @@ def get_head_direction(face):
 
     x_ratio = dx / eye_distance
     y_ratio = dy / eye_distance
-
+    print(f"x_ratio = {x_ratio:.3f}")
     if x_ratio < -0.10:
         return LEFT
 
